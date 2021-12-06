@@ -13,11 +13,17 @@
 # limitations under the License.
 
 import re
-
+import os
+from datetime import datetime
 import keras_tuner
 import tensorflow as tf
 from packaging.version import parse
 from tensorflow.python.util import nest
+# from autokeras.utils.history import History
+from tensorflow.keras.callbacks import History
+from tqdm import tqdm
+from flops_calculator import flop_calculator
+import flops_losses
 
 
 def validate_num_inputs(inputs, num):
@@ -112,6 +118,127 @@ def run_with_adaptive_batch_size(batch_size, func, **fit_kwargs):
             if validation_data is not None:
                 validation_data = validation_data.unbatch().batch(batch_size)
     return history
+
+
+'''
+Custom training loop here###############################################################################################
+'''
+
+
+def custom_training_loop(model, batch_size, max_flops, **fit_kwargs):
+   # @tf.function
+    def _train_step(x, y, model, loss_fn, optimizer, train_epoch_accuracy, train_epoch_loss_avg, max_flops, actual_flops):
+        with tf.GradientTape() as tape:
+            logits = model(x, training=True)
+            loss_value = loss_fn(y, logits)
+            loss_value += abs(max_flops - actual_flops)
+        grads = tape.gradient(loss_value, model.trainable_weights)
+        optimizer.apply_gradients(zip(grads, model.trainable_weights))
+        train_epoch_accuracy.update_state(y, logits)
+        train_epoch_loss_avg.update_state(loss_value)
+        return loss_value
+
+    # @tf.function
+    def _validation_step(x, y, loss_fn, model, val_epoch_accuracy, val_epoch_loss_avg):
+        val_logits = model(x, training=False)
+        loss = loss_fn(y, val_logits)
+        val_epoch_accuracy.update_state(y, val_logits)
+        val_epoch_loss_avg.update_state(loss)
+
+    try:
+        folder = str(datetime.now().strftime("%b-%d-%Y"))
+        os.mkdir("../logs/{}".format(folder))
+    except OSError as e:
+        print(e)
+    history = History()
+    history.model = model
+    logs = {'loss': None, 'accuracy': None, 'val_loss': None, 'val_accuracy': None}
+    writer = tf.summary.create_file_writer("logs/{}".format(folder))
+    fc = flop_calculator()
+    actual_flops = fc.get_flops(history.model)
+    loss_fn = model.loss['classification_head_1']
+
+    optimizer = model.optimizer
+    history.on_train_begin()
+
+    pbar = tqdm(range(fit_kwargs['epochs']))
+    for epoch in pbar:
+        train_epoch_loss_avg = tf.keras.metrics.Mean()
+        train_epoch_accuracy = tf.keras.metrics.CategoricalAccuracy()
+        val_epoch_loss_avg = tf.keras.metrics.Mean()
+        val_epoch_accuracy = tf.keras.metrics.CategoricalAccuracy()
+        model.metrics.extend((train_epoch_loss_avg, train_epoch_accuracy))
+        model.metrics_names.extend(('loss', 'accuracy'))
+        history.model.metrics.extend((train_epoch_loss_avg, train_epoch_accuracy))
+        history.model.metrics_names.extend(('loss', 'accuracy'))
+        # Training loop -
+        for x, y in fit_kwargs['x']:
+            pbar.set_description("TRAINING")
+            loss_value = _train_step(x, y, model, loss_fn, optimizer, train_epoch_accuracy, train_epoch_loss_avg, max_flops, actual_flops)
+
+        # Display metrics at the end of each epoch.
+        train_acc = train_epoch_accuracy.result()
+        train_loss = train_epoch_loss_avg.result()
+        # print("Training acc over epoch: %.4f" % (float(train_acc),))
+        # print("Training loss over epoch: %.4f" % (float(train_loss),))
+        # pbar.set_postfix({'Training acc': float(train_acc), 'Training loss': float(train_loss)})
+
+        # Reset training metrics at the end of each epoch
+        train_epoch_accuracy.reset_states()
+        train_epoch_loss_avg.reset_states()
+
+        # Run a validation loop at the end of each epoch.
+        for xv, yv in fit_kwargs['validation_data']:
+            # pbar.set_description("VALIDATION")
+            _validation_step(xv, yv, loss_fn, model, val_epoch_accuracy, val_epoch_loss_avg)
+
+        # Reset training metrics at the end of each epoch
+        train_epoch_accuracy.reset_states()
+        train_epoch_loss_avg.reset_states()
+
+        val_acc = val_epoch_accuracy.result()
+        val_loss = val_epoch_loss_avg.result()
+        val_epoch_accuracy.reset_states()
+        val_epoch_loss_avg.reset_states()
+        # print("Validation acc: %.4f" % (float(val_acc),))
+        # print("Validation loss: %.4f" % (float(val_loss),))
+        pbar.set_postfix({'Training acc': float(train_acc), 'Training loss': float(train_loss), 'Valid acc': float(val_acc), 'Valid loss': float(val_loss)})
+
+        with writer.as_default():
+            tf.summary.scalar("Train Loss", train_epoch_loss_avg.result(), step=epoch)
+            tf.summary.scalar("Train Acc", train_epoch_accuracy.result(), step=epoch)
+            tf.summary.scalar("Flops", actual_flops, step=epoch, description="Flops of the model")
+            tf.summary.scalar("|max_flops - actual_flops|", abs(max_flops - actual_flops), step=epoch)
+
+        with writer.as_default():
+            tf.summary.scalar("Validation Loss", val_epoch_loss_avg.result(), step=epoch)
+            tf.summary.scalar("Val Acc", val_epoch_accuracy.result(), step=epoch)
+
+        writer.flush()
+
+        # if epoch % 10 == 0:
+        #     model.save('tf_ckpts/model_{}@{}epoch'.format(model.name, epoch))
+        #     print("Saved checkpoint for step    {} in {}".format(epoch, 'tf_ckpts'))
+
+        logs['loss'] = train_loss.numpy()
+        logs['accuracy'] = train_acc.numpy()
+        logs['val_loss'] = val_loss.numpy()
+        logs['val_accuracy'] = val_acc.numpy()
+        history.on_epoch_end(epoch, logs=logs)
+        # stopEarly = Callback_EarlyStopping(val_loss_results, min_delta=0.5, patience=20)
+        # if stopEarly:
+        #     print("Callback_EarlyStopping signal received at epoch= %d/%d" % (epoch, num_epochs))
+        #     print("Terminating training ")
+        #     model.save('tf_ckpts/model_{}@{}epoch'.format(model_name, epoch))
+        #     print("Saved checkpoint for step {} in {}".format(epoch, 'tf_ckpts'))
+        #     break
+    writer.close()
+    return model, history
+
+
+'''
+########################################################################################################################
+'''
 
 
 def get_hyperparameter(value, hp, dtype):

@@ -125,7 +125,7 @@ class AutoModel(object):
         tuner: Union[str, Type[tuner.AutoTuner]] = "greedy",
         overwrite: bool = False,
         seed: Optional[int] = None,
-        max_model_size: Optional[int] = None,
+        max_model_size: Optional[dict] = None,
         **kwargs
     ):
         self.inputs = nest.flatten(inputs)

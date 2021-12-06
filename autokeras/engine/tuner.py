@@ -27,6 +27,7 @@ from autokeras.utils import data_utils
 from autokeras.utils import utils
 
 
+
 class AutoTuner(keras_tuner.engine.tuner.Tuner):
     """A Tuner class based on KerasTuner for AutoKeras.
 
@@ -53,6 +54,7 @@ class AutoTuner(keras_tuner.engine.tuner.Tuner):
         # Save or load the HyperModel.
         self.hypermodel.save(os.path.join(self.project_dir, "graph"))
         self.hyper_pipeline = None
+
 
     def _populate_initial_space(self):
         # Override the function to prevent building the model during initialization.
@@ -98,9 +100,16 @@ class AutoTuner(keras_tuner.engine.tuner.Tuner):
 
         self.adapt(model, kwargs["x"])
 
-        _, history = utils.fit_with_adaptive_batch_size(
-            model, self.hypermodel.batch_size, **kwargs
-        )
+        # _, history = utils.fit_with_adaptive_batch_size(
+        #     model, self.hypermodel.batch_size, **kwargs
+        # )
+
+        '''
+        Flops estimation and calling the custom training loop
+        '''
+
+        _, history = utils.custom_training_loop(model, self.hypermodel.batch_size, self.max_model_size['flops'], **kwargs)
+
         return history
 
     @staticmethod
