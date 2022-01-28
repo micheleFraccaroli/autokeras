@@ -126,3 +126,4 @@ venv.bak/
 
 examples/text_cnn/glove_embedding/
 logs/
+auto_model/

@@ -24,6 +24,7 @@ from tensorflow.keras.callbacks import History
 from tqdm import tqdm
 from flops_calculator import flop_calculator
 import flops_losses
+from colors import colors
 
 
 def validate_num_inputs(inputs, num):
@@ -126,7 +127,7 @@ Custom training loop here#######################################################
 
 
 def custom_training_loop(model, batch_size, max_flops, **fit_kwargs):
-   # @tf.function
+    @tf.function
     def _train_step(x, y, model, loss_fn, optimizer, train_epoch_accuracy, train_epoch_loss_avg, max_flops, actual_flops):
         with tf.GradientTape() as tape:
             logits = model(x, training=True)
@@ -138,7 +139,7 @@ def custom_training_loop(model, batch_size, max_flops, **fit_kwargs):
         train_epoch_loss_avg.update_state(loss_value)
         return loss_value
 
-    # @tf.function
+    @tf.function
     def _validation_step(x, y, loss_fn, model, val_epoch_accuracy, val_epoch_loss_avg):
         val_logits = model(x, training=False)
         loss = loss_fn(y, val_logits)
@@ -152,6 +153,7 @@ def custom_training_loop(model, batch_size, max_flops, **fit_kwargs):
         print(e)
     history = History()
     history.model = model
+    print(model.summary())
     logs = {'loss': None, 'accuracy': None, 'val_loss': None, 'val_accuracy': None}
     writer = tf.summary.create_file_writer("logs/{}".format(folder))
     fc = flop_calculator()
